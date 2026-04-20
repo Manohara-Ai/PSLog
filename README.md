@@ -1,4 +1,4 @@
-<p align="left">
+<p align="middle">
   <img src="resources/logo.png" alt="PSLog" width="240" style="vertical-align: middle; margin-right: 12px;">
   <span style="font-size: 22px; font-weight: 600;"></span><br>
   <span style="font-size: 14px;">
