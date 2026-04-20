@@ -4,7 +4,7 @@
   <span style="font-size: 14px;">
     A lightweight Rust-based service for streaming logs.
   </span><br>
-  <img src="https://img.shields.io/badge/license-MIT-black">
+  <img src="https://img.shields.io/badge/license-MIT-blue">
   <img src="https://img.shields.io/badge/language-rust-orange">
 </p>
 
