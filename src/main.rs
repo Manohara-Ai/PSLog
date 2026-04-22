@@ -5,9 +5,20 @@ mod tests;
 
 use clap::Parser;
 use cli::{Cli, Commands};
+use std::os::raw::c_int;
+
+#[link(name = "pslog")]
+unsafe extern "C" {
+    unsafe fn startGoServer(port: c_int);
+}
 
 fn main() {
     let args = Cli::parse();
+
+    let data_port: c_int = 9540;
+    unsafe {
+        startGoServer(data_port);
+    }
 
     match args.command {
         Commands::Pub { topic, qos, auth, persist, exec, child_args } => {
@@ -32,7 +43,7 @@ fn resolve_topic(topic: Option<String>, exec: &str, child_args: &[String]) -> St
     match topic {
         Some(t) => t,
         None => {
-            if (exec == "python" || exec == "python3") && !child_args.is_empty() {
+            if exec.starts_with("python") && !child_args.is_empty() {
                 child_args[0].clone()
             } else {
                 exec.to_string()
