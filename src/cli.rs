@@ -115,4 +115,8 @@ pub enum WireMessage {
     },
 
     Scan,
+
+    Ping,
+
+    Close,
 }
