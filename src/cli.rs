@@ -4,7 +4,8 @@
  * 
  * 1. PUB (Publish) - Spawns a child process and streams its logs.
  * --topic   : Target topic name                              [Default: executable name or script name]
- * --qos     : Quality of Service (High, Auto, Poor)          [Default: Auto]
+ * --port    : Target port number                             [Default: 60759]
+ * --qos     : Quality of Service (high, auto, poor)          [Default: auto]
  * --auth    : Authentication token for restricted topics     [Default: None]
  * --persist : Boolean flag to keep logs in buffer memory     [Default: false]
  * --exec    : Path to the executable to run                  [Required]
@@ -12,35 +13,36 @@
  * 
  * 2. SUB (Subscribe) - Listens to a live log streams.
  * --topic   : The specific topic to monitor                  [Required]
- * --fos     : Frequency of Service (Sync, Auto)              [Default: Auto]
- * --format  : Output visualization (Json, Text, Pretty)      [Default: Text]
+ * --fos     : Frequency of Service (sync, auto)              [Default: auto]
+ * --format  : Output visualization (json, text, pretty)      [Default: text]
  * 
  * 3. SCAN - Discovery utility to list all active log topics. [No Arguments]
  */
 
 use clap::{Parser, Subcommand, ValueEnum};
+use serde::Serialize;
 
-#[derive(ValueEnum, Clone, Debug)]
+#[derive(ValueEnum, Clone, Debug, Serialize)]
 #[allow(non_camel_case_types)]
 pub enum Qos {
-    High,
-    Auto,
-    Poor,
+    high,
+    auto,
+    poor,
 }
 
-#[derive(ValueEnum, Clone, Debug)]
+#[derive(ValueEnum, Clone, Debug, Serialize)]
 #[allow(non_camel_case_types)]
 pub enum Fos {
-    Sync,
-    Auto,
+    sync,
+    auto,
 }
 
-#[derive(ValueEnum, Clone, Debug)]
+#[derive(ValueEnum, Clone, Debug, Serialize)]
 #[allow(non_camel_case_types)]
 pub enum LogFormat {
-    Json,
-    Text,
-    Pretty,
+    json,
+    text,
+    pretty,
 }
 
 #[derive(Parser)]
@@ -55,6 +57,9 @@ pub enum Commands {
     Pub {
         #[arg(long)]
         topic: Option<String>,
+
+        #[arg(long, default_value_t = 60759)]
+        port: u16,
 
         #[arg(long, value_enum, default_value = "auto")]
         qos: Qos,
@@ -76,10 +81,36 @@ pub enum Commands {
         #[arg(long)]
         topic: String,
 
+        #[arg(long, default_value_t = 60759)]
+        port: u16,
+
         #[arg(long, value_enum, default_value = "auto")]
         fos: Fos,
 
         #[arg(long, value_enum, default_value = "text")]
+        format: LogFormat,
+    },
+
+    Scan,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type")]
+pub enum WireMessage {
+    Pub {
+        topic: String,
+        port: u16,
+        qos: Qos,
+        auth: Option<String>,
+        persist: bool,
+        exec: String,
+        child_args: Vec<String>,
+    },
+
+    Sub {
+        topic: String,
+        port: u16,
+        fos: Fos,
         format: LogFormat,
     },
 
