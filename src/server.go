@@ -1,29 +1,49 @@
 package main
 
-import "C"
 import (
-	"bufio"
+	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
+	"os"
 )
 
-//export startGoServer
-func startGoServer(port int) {
-	addr := fmt.Sprintf(":%d", port)
-	listener, err := net.Listen("tcp", addr)
+const socketPath = "/tmp/pslog.sock"
+
+type Message struct {
+	Type string `json:"type"`
+
+	Topic     string   `json:"topic"`
+	Port      uint16   `json:"port"`
+	Qos       string   `json:"qos"`
+	Auth      *string  `json:"auth"`
+	Persist   bool     `json:"persist"`
+	Exec      string   `json:"exec"`
+	ChildArgs []string `json:"child_args"`
+
+	Fos    string `json:"fos"`
+	Format string `json:"format"`
+}
+
+
+func main() {
+	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
+		fmt.Println("failed to remove old socket:", err)
+		return
+	}
+
+	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
-		fmt.Println("failed to create listener, err:", err)
+		fmt.Println("failed to listen:", err)
 		return
 	}
 	defer listener.Close()
 
-	fmt.Printf("listening on %s\n", listener.Addr())
-
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			fmt.Println("failed to accept connection, err:", err)
+			fmt.Println("accept error:", err)
 			continue
 		}
 
@@ -34,27 +54,68 @@ func startGoServer(port int) {
 func handleConnection(conn net.Conn) {
 	defer conn.Close()
 
-	reader := bufio.NewReader(conn)
 	for {
-		bytes, err := reader.ReadBytes(byte('\n'))
+		lenBuf := make([]byte, 4)
+		_, err := io.ReadFull(conn, lenBuf)
 		if err != nil {
-			if err != io.EOF {
-				fmt.Println("failed to read data, err:", err)
-			}
 			return
 		}
 
-		fmt.Printf("request: %s", bytes)
+		length := binary.BigEndian.Uint32(lenBuf)
 
-		line := fmt.Sprintf("Echo: %s", bytes)
-		fmt.Printf("response: %s", line)
-
-		_, err = conn.Write([]byte(line))
+		data := make([]byte, length)
+		_, err = io.ReadFull(conn, data)
 		if err != nil {
-			fmt.Println("failed to write data, err:", err)
 			return
 		}
+
+		var msg Message
+		if err := json.Unmarshal(data, &msg); err != nil {
+			fmt.Println("invalid json:", err)
+			continue
+		}
+
+		handleMessage(conn, msg)
 	}
 }
 
-func main() {}
+func handleMessage(conn net.Conn, msg Message) {
+	switch msg.Type {
+
+	case "Ping":
+		fmt.Println("Ping received")
+		sendResponse(conn, map[string]string{"type": "Pong"})
+
+	case "Pub":
+		fmt.Println("PUB request")
+		fmt.Printf("  %+v\n", msg)
+
+	case "Sub":
+		fmt.Println("SUB request")
+		fmt.Printf("  %+v\n", msg)
+
+	case "Scan":
+		fmt.Println("SCAN request")
+
+	case "Close":
+		fmt.Println("Client requested close")
+		conn.Close()
+		return
+
+	default:
+		fmt.Println("unknown message type:", msg.Type)
+	}
+}
+
+func sendResponse(conn net.Conn, v interface{}) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return
+	}
+
+	lenBuf := make([]byte, 4)
+	binary.BigEndian.PutUint32(lenBuf, uint32(len(data)))
+
+	conn.Write(lenBuf)
+	conn.Write(data)
+}
