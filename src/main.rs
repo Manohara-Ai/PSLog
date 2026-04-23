@@ -4,33 +4,48 @@ mod cli;
 mod tests; 
 
 use clap::Parser;
-use cli::{Cli, Commands};
+use cli::{Cli, Commands, WireMessage};
 use std::os::raw::c_int;
 
+/*
 #[link(name = "pslog")]
 unsafe extern "C" {
     unsafe fn startGoServer(port: c_int);
 }
+*/
 
 fn main() {
     let args = Cli::parse();
 
-    let data_port: c_int = 9540;
-    unsafe {
-        startGoServer(data_port);
-    }
+    let wire_msg = match args.command {
+        Commands::Pub { topic, port, qos, auth, persist, exec, child_args } => {
+            let topic = resolve_topic(topic, &exec, &child_args);
 
-    match args.command {
-        Commands::Pub { topic, qos, auth, persist, exec, child_args } => {
-            // TODO
+            WireMessage::Pub {
+                topic,
+                port,
+                qos,
+                auth,
+                persist,
+                exec,
+                child_args,
+            }
         }
-        Commands::Sub { topic, .. } => {
-            // TODO
+
+        Commands::Sub { topic, port, fos, format } => {
+            WireMessage::Sub {
+                topic,
+                port,
+                fos,
+                format,
+            }
         }
-        Commands::Scan => {
-            // TODO
-        }
-    }
+
+        Commands::Scan => WireMessage::Scan,
+    };
+
+    let json = serde_json::to_string(&wire_msg).unwrap();
+    println!("{}", json);
 }
 
 /// Resolves the final topic name based on CLI input.
