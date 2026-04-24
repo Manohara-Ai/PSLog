@@ -1,3 +1,32 @@
+/*
+ * PSLOG CLIENT: CLI for log streaming system
+ *
+ * PURPOSE:
+ * Provides Pub/Sub interface to stream process logs via PSLOG broker.
+ *
+ * MODES:
+ * PUB  - Runs a process and streams stdout logs to broker
+ * SUB  - Subscribes to a topic and receives live logs via TCP
+ * SCAN - Queries broker for active topics
+ *
+ * FLOW:
+ * PUB:
+ * - Resolve topic
+ * - Connect to broker (Unix socket)
+ * - Spawn process
+ * - Stream stdout logs line-by-line
+ *
+ * SUB:
+ * - Start TCP listener on given port
+ * - Register with broker (IP + port)
+ * - Receive and print logs
+ *
+ * DESIGN:
+ * - Unix socket for control plane
+ * - TCP for data plane
+ * - Line-based log streaming
+ */
+
 mod cli;
 
 #[cfg(test)]
@@ -13,6 +42,11 @@ use std::{thread, time::Duration};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
+use std::net::{TcpListener, UdpSocket};
+
+use colored::*;
+use chrono::Local;
+
 fn main() {
     let args = Cli::parse();
 
@@ -20,6 +54,8 @@ fn main() {
         Commands::Pub { topic, port, qos, auth, persist, exec, child_args } => {
             let topic = resolve_topic(topic, &exec, &child_args);
             let mut stream = ensure_server();
+
+            term_log("INFO", "PUB", &format!("Streaming topic: {}", topic.cyan()));
 
             let init = WireMessage::Pub {
                 topic,
@@ -47,14 +83,32 @@ fn main() {
             send_msg(&mut stream, &WireMessage::Close);
         }
 
-        Commands::Sub { topic, port, fos, format } => {
+        Commands::Sub { topic, port, fos, format, ip } => {
             let mut stream = ensure_server();
 
-            send_msg(&mut stream, &WireMessage::Sub { topic, port, fos });
+            let listener = TcpListener::bind(("0.0.0.0", port)).expect("failed to bind TCP listener");
 
+            let target_ip = ip.unwrap_or_else(|| {
+                get_local_ip().unwrap_or_else(|| "127.0.0.1".to_string())
+            });
+
+            term_log("SUCCESS", "SUB", &format!("Listening on {}:{}", target_ip.yellow(), port));
+            term_log("INFO", "TOPIC", &topic.magenta().to_string());
+
+            send_msg(&mut stream, &WireMessage::Sub {
+                topic: topic.clone(),
+                port,
+                fos,
+                ip: target_ip,
+            });
+
+            let (mut conn, _) = listener.accept().unwrap();
             loop {
-                if let WireMessage::Log { log } = read_msg(&mut stream) {
-                    println!("{}", log);
+                match read_msg(&mut conn) {
+                    WireMessage::Log { log } => {
+                        println!("{} {}", "│".bright_black(), log);
+                    },
+                    _ => break,
                 }
             }
         }
@@ -68,6 +122,44 @@ fn main() {
             }
         }
     }
+}
+
+/// Resolves the machine’s primary local IP address.
+///
+/// Workflow:
+/// 1. Binds a UDP socket to an ephemeral local port (`0.0.0.0:0`).
+/// 2. "Connects" the UDP socket to a public endpoint (`8.8.8.8:80`).
+///    - This does NOT send packets; it only forces OS routing resolution.
+/// 3. Queries the socket’s local address after routing is determined.
+/// 4. Extracts and returns the IPv4/IPv6 address portion.
+///
+/// Arguments:
+/// - None.
+///
+/// Returns:
+/// - `Some(String)` containing the local IP address if resolution succeeds.
+/// - `None` if:
+///     - socket binding fails
+///     - route resolution fails
+///     - local address cannot be retrieved
+///
+/// Behavior:
+/// - Does not rely on external services beyond a dummy UDP route check.
+/// - Does not require actual packet transmission.
+/// - Typically returns LAN IP (e.g., `192.168.x.x`) or interface IP.
+///
+/// Panics:
+/// - Never explicitly panics (all errors are handled via `Option`).
+///
+/// Notes:
+/// - Uses a well-known trick (UDP "fake connect") to determine outbound interface.
+/// - Works even without internet connectivity in many LAN setups.
+/// - The chosen IP is the OS-selected egress interface for external traffic.
+/// - Useful for service advertisement (e.g., broker → subscriber registration).
+fn get_local_ip() -> Option<String> {
+    let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("8.8.8.8:80").ok()?;
+    socket.local_addr().ok().map(|addr| addr.ip().to_string())
 }
 
 /// Resolves the final topic name based on CLI input.
@@ -309,7 +401,7 @@ fn send_msg(stream: &mut UnixStream, msg: &WireMessage) {
     stream.write_all(&data).unwrap();
 }
 
-/// Reads a single framed `WireMessage` from a UnixStream.
+/// Reads a single framed `WireMessage` from a reader.
 ///
 /// Workflow:
 /// 1. Read 4-byte length prefix.
@@ -317,7 +409,7 @@ fn send_msg(stream: &mut UnixStream, msg: &WireMessage) {
 /// 3. Deserialize JSON into `WireMessage`.
 ///
 /// Arguments:
-/// - `stream`: Active UnixStream.
+/// - `stream`: Active reader (UnixStream or TcpStream).
 ///
 /// Returns:
 /// - Parsed `WireMessage`.
@@ -334,14 +426,52 @@ fn send_msg(stream: &mut UnixStream, msg: &WireMessage) {
 /// Notes:
 /// - No size limits enforced (potential DoS risk).
 /// - Should add max frame size for production.
-fn read_msg(stream: &mut UnixStream) -> WireMessage {
+fn read_msg<R: Read>(stream: &mut R) -> WireMessage {
     let mut len_buf = [0u8; 4];
-    stream.read_exact(&mut len_buf).unwrap();
+    stream.read_exact(&mut len_buf).expect("Stream closed");
 
     let len = u32::from_be_bytes(len_buf);
     let mut data = vec![0u8; len as usize];
 
-    stream.read_exact(&mut data).unwrap();
+    stream.read_exact(&mut data).expect("Failed to read message body");
 
-    serde_json::from_slice(&data).unwrap()
+    serde_json::from_slice(&data).expect("Failed to deserialize message")
+}
+
+/*
+ * Formats and prints terminal logs with color-coded levels.
+ *
+ * PURPOSE:
+ * Provides consistent CLI logging with timestamp, level tag, component, and message.
+ *
+ * PARAMETERS:
+ * - level: Log severity ("INFO", "SUCCESS", "ERROR", etc.)
+ * - component: Source module or system component name
+ * - message: Log content to display
+ *
+ * BEHAVIOR:
+ * - Prepends HH:MM:SS timestamp
+ * - Applies color-coded label based on level
+ * - Formats output for readable terminal diagnostics
+ *
+ * NOTES:
+ * - Uses ANSI styling for terminal readability
+ * - Intended for CLI/debug output only
+ */
+fn term_log(level: &str, component: &str, message: &str) {
+    let time = Local::now().format("%H:%M:%S").to_string();
+    let prefix = match level {
+        "INFO" => " INFO ".on_blue().white().bold(),
+        "SUCCESS" => " DONE ".on_green().white().bold(),
+        "ERROR" => " FAIL ".on_red().white().bold(),
+        _ => " LOG  ".on_white().black().bold(),
+    };
+    
+    println!(
+        "{} {} {} {}",
+        time.dimmed(),
+        prefix,
+        component.bright_black().bold(),
+        message
+    );
 }
