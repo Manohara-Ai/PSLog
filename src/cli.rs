@@ -89,6 +89,9 @@ pub enum Commands {
 
         #[arg(long, value_enum, default_value = "text")]
         format: LogFormat,
+
+        #[arg(long)]
+        ip: Option<String>,
     },
 
     Scan,
@@ -109,6 +112,7 @@ pub enum WireMessage {
         topic: String,
         port: u16,
         fos: Fos,
+        ip: String
     },
 
     Log {
