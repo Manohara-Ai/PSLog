@@ -54,46 +54,61 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
+    /// Publish logs from a running process
     Pub {
+        /// Target topic name
         #[arg(long)]
         topic: Option<String>,
 
+        /// Port number for publisher
         #[arg(long, default_value_t = 60759)]
         port: u16,
 
+        /// Quality of Service (high, auto, poor)
         #[arg(long, value_enum, default_value = "auto")]
         qos: Qos,
 
+        /// Auth token (optional)
         #[arg(long)]
         auth: Option<String>,
 
+        /// Persist logs in broker buffer
         #[arg(long)]
         persist: bool,
 
+        /// Executable to run
         #[arg(long)]
         exec: String,
 
+        /// Child process arguments
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         child_args: Vec<String>,
     },
 
+    /// Subscribe to a log topic
     Sub {
+        /// Topic to subscribe to
         #[arg(long)]
         topic: String,
 
+        /// Port to listen on
         #[arg(long, default_value_t = 60759)]
         port: u16,
 
+        /// Subscription mode
         #[arg(long, value_enum, default_value = "auto")]
         fos: Fos,
 
+        /// Output format
         #[arg(long, value_enum, default_value = "text")]
         format: LogFormat,
 
+        /// Override subscriber IP
         #[arg(long)]
         ip: Option<String>,
     },
 
+    /// List active topics
     Scan,
 }
 
