@@ -24,3 +24,26 @@ target
 # Added by cargo
 
 /target
+
+# Go
+/bin/
+/dist/
+/vendor/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go modules (optional local cache noise)
+go.sum.tmp
+
+# IDEs
+.idea/
+.vscode/
+
+# OS junk
+.DS_Store
+Thumbs.db
