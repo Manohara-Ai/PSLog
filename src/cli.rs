@@ -20,9 +20,9 @@
  */
 
 use clap::{Parser, Subcommand, ValueEnum};
-use serde::Serialize;
+use serde::{Serialize, Deserialize};
 
-#[derive(ValueEnum, Clone, Debug, Serialize)]
+#[derive(ValueEnum, Clone, Debug, Serialize, Deserialize)]
 #[allow(non_camel_case_types)]
 pub enum Qos {
     high,
@@ -30,14 +30,14 @@ pub enum Qos {
     poor,
 }
 
-#[derive(ValueEnum, Clone, Debug, Serialize)]
+#[derive(ValueEnum, Clone, Debug, Serialize, Deserialize)]
 #[allow(non_camel_case_types)]
 pub enum Fos {
     sync,
     auto,
 }
 
-#[derive(ValueEnum, Clone, Debug, Serialize)]
+#[derive(ValueEnum, Clone, Debug, Serialize, Deserialize)]
 #[allow(non_camel_case_types)]
 pub enum LogFormat {
     json,
@@ -94,7 +94,7 @@ pub enum Commands {
     Scan,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug, Deserialize)]
 #[serde(tag = "type")]
 pub enum WireMessage {
     Pub {
@@ -103,15 +103,16 @@ pub enum WireMessage {
         qos: Qos,
         auth: Option<String>,
         persist: bool,
-        exec: String,
-        child_args: Vec<String>,
     },
 
     Sub {
         topic: String,
         port: u16,
         fos: Fos,
-        format: LogFormat,
+    },
+
+    Log {
+        log: String,
     },
 
     Scan,

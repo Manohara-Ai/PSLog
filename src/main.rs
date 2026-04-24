@@ -7,63 +7,92 @@ use clap::Parser;
 use cli::{Cli, Commands, WireMessage};
 
 use std::os::unix::net::UnixStream;
-use std::io::{Write, Read};
+use std::io::{Write, Read, BufRead};
 use std::{thread, time::Duration};
 
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 fn main() {
     let args = Cli::parse();
 
-    let wire_msg = match args.command {
+    match args.command {
         Commands::Pub { topic, port, qos, auth, persist, exec, child_args } => {
             let topic = resolve_topic(topic, &exec, &child_args);
+            let mut stream = ensure_server();
 
-            WireMessage::Pub {
+            let init = WireMessage::Pub {
                 topic,
                 port,
                 qos,
                 auth,
                 persist,
-                exec,
-                child_args,
+            };
+            send_msg(&mut stream, &init);
+
+            let mut child = Command::new(exec)
+                .args(child_args)
+                .stdout(Stdio::piped())
+                .spawn()
+                .unwrap();
+
+            let stdout = child.stdout.take().unwrap();
+            let reader = std::io::BufReader::new(stdout);
+
+            for line in reader.lines() {
+                let line = line.unwrap();
+                send_msg(&mut stream, &WireMessage::Log { log: line });
             }
+
+            send_msg(&mut stream, &WireMessage::Close);
         }
 
         Commands::Sub { topic, port, fos, format } => {
-            WireMessage::Sub {
-                topic,
-                port,
-                fos,
-                format,
+            let mut stream = ensure_server();
+
+            send_msg(&mut stream, &WireMessage::Sub { topic, port, fos });
+
+            loop {
+                if let WireMessage::Log { log } = read_msg(&mut stream) {
+                    println!("{}", log);
+                }
             }
         }
 
-        Commands::Scan => WireMessage::Scan,
-    };
+        Commands::Scan => {
+            let mut stream = ensure_server();
+            send_msg(&mut stream, &WireMessage::Scan);
 
-    let mut stream = ensure_server();
-
-    let data = serde_json::to_vec(&wire_msg).unwrap();
-    let len = (data.len() as u32).to_be_bytes();
-
-    stream.write_all(&len).unwrap();
-    stream.write_all(&data).unwrap();
-
-    let close = serde_json::to_vec(&WireMessage::Close).unwrap();
-    let len = (close.len() as u32).to_be_bytes();
-
-    stream.write_all(&len).unwrap();
-    stream.write_all(&close).unwrap();
+            loop {
+                println!("{:?}", read_msg(&mut stream));
+            }
+        }
+    }
 }
 
 /// Resolves the final topic name based on CLI input.
-/// 
-/// Rules:
-/// 1. If an explicit `--topic` is provided, use it.
-/// 2. If no topic is provided and the executable is 'python', use the script name (first arg).
-/// 3. Otherwise, default to the executable name itself.
+///
+/// Workflow:
+/// 1. Use explicit `--topic` if provided.
+/// 2. If executable is Python, use script name (first arg).
+/// 3. Otherwise, fallback to executable name.
+///
+/// Arguments:
+/// - `topic`: Optional topic override from CLI.
+/// - `exec`: Executable name/path.
+/// - `child_args`: Arguments passed to the executable.
+///
+/// Returns:
+/// - Final resolved topic string.
+///
+/// Behavior:
+/// - Deterministic mapping from CLI input → topic name.
+///
+/// Panics:
+/// - None.
+///
+/// Notes:
+/// - Python detection is string-based (`starts_with("python")`).
 fn resolve_topic(topic: Option<String>, exec: &str, child_args: &[String]) -> String {
     match topic {
         Some(t) => t,
@@ -79,18 +108,26 @@ fn resolve_topic(topic: Option<String>, exec: &str, child_args: &[String]) -> St
 
 /// Resolves the filesystem path to the `pslog_server` executable.
 ///
-/// Resolution order (first match wins):
-/// 1. `PSLOG_SERVER_PATH` environment variable (explicit override for dev/testing).
-/// 2. System install location: `/usr/local/lib/pslog/pslog_server`.
-/// 3. Same directory as the current executable (useful for dev builds like `target/debug/`).
-/// 4. Fallback to `pslog_server` (expects it to be available in `$PATH`).
+/// Workflow:
+/// 1. Check `PSLOG_SERVER_PATH` env override.
+/// 2. Check system install path.
+/// 3. Check same directory as current executable.
+/// 4. Fallback to `$PATH` resolution.
 ///
-/// This allows the CLI to work across:
-/// - development builds
-/// - local installs
-/// - production deployments
+/// Arguments:
+/// - None.
 ///
-/// Note: This function does NOT verify executability beyond existence.
+/// Returns:
+/// - Path to the server binary.
+///
+/// Behavior:
+/// - First-match resolution strategy.
+///
+/// Panics:
+/// - None.
+///
+/// Notes:
+/// - Only checks for existence, not executability or permissions.
 fn resolve_server_path() -> PathBuf {
     if let Ok(path) = std::env::var("PSLOG_SERVER_PATH") {
         return PathBuf::from(path);
@@ -113,21 +150,28 @@ fn resolve_server_path() -> PathBuf {
     PathBuf::from("pslog_server")
 }
 
-/// Spawns the PSLog Go server as a child process.
+/// Spawns the PSLog Go server as a background process.
 ///
-/// Uses `resolve_server_path()` to locate the binary and starts it
-/// in the background using `Command::spawn()`.
+/// Workflow:
+/// 1. Resolve binary path.
+/// 2. Spawn process using `Command::spawn()`.
+///
+/// Arguments:
+/// - None.
+///
+/// Returns:
+/// - None.
 ///
 /// Behavior:
-/// - Non-blocking: returns immediately after spawning.
-/// - Does NOT check if a server is already running.
-/// - Does NOT manage lifecycle (no handle retained).
+/// - Non-blocking (returns immediately).
+/// - Does not track or manage the child process.
+/// - Does not verify if a server is already running.
 ///
-/// Errors:
-/// - Panics if the binary cannot be found or executed.
+/// Panics:
+/// - If the binary cannot be found or executed.
 ///
-/// Intended to be called only after a failed connection attempt
-/// (i.e., when no active server is detected).
+/// Notes:
+/// - Intended to be called only after a failed connection attempt.
 fn start_pslog_server() {
     let server_path = resolve_server_path();
 
@@ -136,27 +180,30 @@ fn start_pslog_server() {
         .expect("failed to start PSLog server");
 }
 
-/// Ensures that a PSLog server is running and returns a connected UnixStream.
+/// Ensures a PSLog server is running and returns a connected stream.
 ///
 /// Workflow:
-/// 1. Attempt to connect to an existing server via `try_ping()`.
-/// 2. If successful → reuse that connection.
-/// 3. If not → spawn a new server using `start_pslog_server()`.
-/// 4. Retry connection (with small delays) until the server becomes available.
+/// 1. Attempt connection via `try_ping()`.
+/// 2. If successful → reuse connection.
+/// 3. Otherwise → spawn server.
+/// 4. Retry connection with backoff.
 ///
-/// Retry policy:
-/// - Up to 20 attempts
-/// - 50ms delay between attempts (~1 second total wait)
+/// Arguments:
+/// - None.
 ///
 /// Returns:
-/// - A connected `UnixStream` ready for communication.
+/// - Connected `UnixStream`.
+///
+/// Behavior:
+/// - Retry loop: 20 attempts with 50ms delay (~1s total).
+/// - Reuses verified connections only.
 ///
 /// Panics:
-/// - If the server cannot be reached after retries.
+/// - If server cannot be reached after retries.
 ///
-/// Note:
-/// - Assumes server binds to `/tmp/pslog.sock`.
-/// - Does not differentiate between failure modes (e.g., permission, crash).
+/// Notes:
+/// - Assumes socket path: `/tmp/pslog.sock`.
+/// - Does not distinguish failure causes.
 fn ensure_server() -> UnixStream {
     let socket = "/tmp/pslog.sock";
 
@@ -176,30 +223,31 @@ fn ensure_server() -> UnixStream {
     panic!("Failed to connect to PSLog server");
 }
 
-/// Attempts to connect to the PSLog server and verify liveness via a Ping/Pong handshake.
+/// Attempts to connect to the server and validate it via Ping/Pong.
 ///
-/// Protocol:
-/// - Sends a length-prefixed `WireMessage::Ping`.
-/// - Expects a length-prefixed JSON response with `{ "type": "Pong" }`.
-///
-/// Steps:
+/// Workflow:
 /// 1. Connect to Unix socket.
-/// 2. Send Ping message (framed with 4-byte length prefix).
-/// 3. Read response length (4 bytes, big-endian).
-/// 4. Read response payload.
-/// 5. Deserialize and validate response type.
+/// 2. Send `Ping` (length-prefixed).
+/// 3. Read response frame.
+/// 4. Validate `{ type: "Pong" }`.
+///
+/// Arguments:
+/// - `socket`: Path to Unix socket.
 ///
 /// Returns:
-/// - `Ok(UnixStream)` if a valid Pong is received (connection is reusable).
-/// - `Err(())` if:
-///     - connection fails
-///     - write/read fails
-///     - response is malformed
-///     - response type is not "Pong"
+/// - `Ok(UnixStream)` if valid server responds.
+/// - `Err(())` otherwise.
+///
+/// Behavior:
+/// - Ensures liveness and protocol correctness.
+/// - Rejects stale or invalid endpoints.
+///
+/// Panics:
+/// - None.
 ///
 /// Notes:
-/// - This prevents false positives (e.g., stale sockets or wrong processes).
-/// - Uses `serde_json::Value` for flexible validation; can be replaced with a strict type later.
+/// - Uses JSON framing with 4-byte big-endian length prefix.
+/// - Uses dynamic JSON validation (`serde_json::Value`).
 fn try_ping(socket: &str) -> Result<UnixStream, ()> {
     if let Ok(mut stream) = UnixStream::connect(socket) {
         let ping = serde_json::to_vec(&WireMessage::Ping).unwrap();
@@ -227,4 +275,73 @@ fn try_ping(socket: &str) -> Result<UnixStream, ()> {
     }
 
     Err(())
+}
+
+/// Sends a framed `WireMessage` over a UnixStream.
+///
+/// Workflow:
+/// 1. Serialize message to JSON.
+/// 2. Prefix with 4-byte big-endian length.
+/// 3. Write frame to stream.
+///
+/// Arguments:
+/// - `stream`: Active UnixStream.
+/// - `msg`: Message to send.
+///
+/// Returns:
+/// - None.
+///
+/// Behavior:
+/// - Guarantees message boundary preservation.
+/// - Uses length-prefix framing.
+///
+/// Panics:
+/// - If serialization fails.
+/// - If write operation fails.
+///
+/// Notes:
+/// - Required because Unix sockets are byte streams (not message-based).
+fn send_msg(stream: &mut UnixStream, msg: &WireMessage) {
+    let data = serde_json::to_vec(msg).unwrap();
+    let len = (data.len() as u32).to_be_bytes();
+
+    stream.write_all(&len).unwrap();
+    stream.write_all(&data).unwrap();
+}
+
+/// Reads a single framed `WireMessage` from a UnixStream.
+///
+/// Workflow:
+/// 1. Read 4-byte length prefix.
+/// 2. Read exact payload bytes.
+/// 3. Deserialize JSON into `WireMessage`.
+///
+/// Arguments:
+/// - `stream`: Active UnixStream.
+///
+/// Returns:
+/// - Parsed `WireMessage`.
+///
+/// Behavior:
+/// - Blocks until full message is received.
+/// - Assumes sender follows framing protocol.
+///
+/// Panics:
+/// - If stream closes unexpectedly.
+/// - If length prefix is invalid.
+/// - If deserialization fails.
+///
+/// Notes:
+/// - No size limits enforced (potential DoS risk).
+/// - Should add max frame size for production.
+fn read_msg(stream: &mut UnixStream) -> WireMessage {
+    let mut len_buf = [0u8; 4];
+    stream.read_exact(&mut len_buf).unwrap();
+
+    let len = u32::from_be_bytes(len_buf);
+    let mut data = vec![0u8; len as usize];
+
+    stream.read_exact(&mut data).unwrap();
+
+    serde_json::from_slice(&data).unwrap()
 }
