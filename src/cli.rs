@@ -40,9 +40,9 @@ pub enum Fos {
 #[derive(ValueEnum, Clone, Debug, Serialize, Deserialize)]
 #[allow(non_camel_case_types)]
 pub enum LogFormat {
-    json,
-    text,
-    pretty,
+    Json,
+    Text,
+    Pretty,
 }
 
 #[derive(Parser)]
@@ -112,6 +112,22 @@ pub enum Commands {
     Scan,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum LogLevel {
+    TRACE,
+    DEBUG,
+    INFO,
+    WARN,
+    ERROR,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct LogEntry {
+    pub ts: u64,
+    pub level: LogLevel,
+    pub message: String,
+}
+
 #[derive(Serialize, Debug, Deserialize)]
 #[serde(tag = "type")]
 pub enum WireMessage {
@@ -127,11 +143,11 @@ pub enum WireMessage {
         topic: String,
         port: u16,
         fos: Fos,
-        ip: String
+        ip: String,
     },
 
     Log {
-        log: String,
+        log: LogEntry,
     },
 
     Scan,

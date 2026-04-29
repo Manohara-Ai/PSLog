@@ -19,7 +19,7 @@
  * SUB:
  * - Start TCP listener on given port
  * - Register with broker (IP + port)
- * - Receive and print logs
+ * - Receive, format and print logs
  *
  * DESIGN:
  * - Unix socket for control plane
@@ -33,7 +33,7 @@ mod cli;
 mod tests; 
 
 use clap::Parser;
-use cli::{Cli, Commands, WireMessage};
+use cli::{Cli, Commands, WireMessage, LogEntry, LogLevel};
 
 use std::os::unix::net::UnixStream;
 use std::io::{Write, Read, BufRead};
@@ -46,6 +46,8 @@ use std::net::{TcpListener, UdpSocket};
 
 use colored::*;
 use chrono::Local;
+
+use crate::cli::LogFormat;
 
 fn main() {
     let args = Cli::parse();
@@ -69,21 +71,49 @@ fn main() {
             let mut child = Command::new(exec)
                 .args(child_args)
                 .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
                 .spawn()
                 .unwrap();
 
             let stdout = child.stdout.take().unwrap();
+            let stderr = child.stderr.take().unwrap();
+
+            let mut stream_out = stream.try_clone().unwrap();
+            
+            thread::spawn(move || {
             let reader = std::io::BufReader::new(stdout);
 
             for line in reader.lines() {
                 let line = line.unwrap();
-                send_msg(&mut stream, &WireMessage::Log { log: line });
+
+                let log = LogEntry {
+                    ts: now(),
+                    level: infer_level(&line, false),
+                    message: line,
+                };
+
+                    send_msg(&mut stream_out, &WireMessage::Log { log });
+                }
+            });
+
+            let reader = std::io::BufReader::new(stderr);
+            for line in reader.lines() {
+                let line = line.unwrap();
+
+                let log = LogEntry {
+                    ts: now(),
+                    level: infer_level(&line, true),
+                    message: line,
+                };
+
+                send_msg(&mut stream, &WireMessage::Log { log });
             }
 
             send_msg(&mut stream, &WireMessage::Close);
         }
 
         Commands::Sub { topic, port, fos, format, ip } => {
+            term_log("DEBUG", "FORMAT", &format!("{:?}", format));
             let mut stream = ensure_server();
 
             let listener = TcpListener::bind(("0.0.0.0", port)).expect("failed to bind TCP listener");
@@ -103,11 +133,38 @@ fn main() {
             });
 
             let (mut conn, _) = listener.accept().unwrap();
+            
             loop {
                 match read_msg(&mut conn) {
                     WireMessage::Log { log } => {
-                        println!("{} {}", "│".bright_black(), log);
-                    },
+
+                        match format {
+                            LogFormat::Json => {
+                                println!("{}", serde_json::to_string(&log).unwrap());
+                            }
+
+                            LogFormat::Pretty => {
+                                println!("{}", serde_json::to_string_pretty(&log).unwrap());
+                            }
+
+                            LogFormat::Text => {
+                                let level_str = match log.level {
+                                    LogLevel::ERROR => "ERROR".red(),
+                                    LogLevel::WARN  => "WARN".yellow(),
+                                    LogLevel::INFO  => "INFO".green(),
+                                    LogLevel::DEBUG => "DEBUG".blue(),
+                                    LogLevel::TRACE => "TRACE".white(),
+                                };
+
+                                println!(
+                                    "{} [{}] {}",
+                                    "│".bright_black(),
+                                    level_str,
+                                    log.message
+                                );
+                            }
+                        }
+                    }
                     _ => break,
                 }
             }
@@ -121,6 +178,80 @@ fn main() {
                 println!("{:?}", read_msg(&mut stream));
             }
         }
+    }
+}
+
+/// Returns the current system timestamp in seconds since UNIX epoch.
+///
+/// Workflow:
+/// 1. Fetch current system time.
+/// 2. Compute duration since UNIX_EPOCH.
+/// 3. Convert duration to seconds.
+///
+/// Arguments:
+/// - None.
+///
+/// Returns:
+/// - `u64` representing seconds since UNIX epoch.
+///
+/// Behavior:
+/// - Uses system clock as time source.
+/// - Provides coarse-grained (second-level) timestamp.
+///
+/// Panics:
+/// - If system time is earlier than UNIX_EPOCH.
+///
+/// Notes:
+/// - Relies on system clock accuracy.
+/// - Suitable for logging and ordering events.
+fn now() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+/// Infers log level from a given log line and stream type.
+///
+/// Workflow:
+/// 1. Check if input originated from stderr.
+/// 2. Normalize line to lowercase.
+/// 3. Match keywords to determine log level.
+///
+/// Arguments:
+/// - `line`: Log line content.
+/// - `is_stderr`: Indicates if line came from stderr.
+///
+/// Returns:
+/// - `LogLevel` inferred from content or stream.
+///
+/// Behavior:
+/// - stderr lines are always classified as ERROR.
+/// - Keyword-based matching for "error", "warn", "debug".
+/// - Defaults to INFO if no match found.
+///
+/// Panics:
+/// - None.
+///
+/// Notes:
+/// - Simple heuristic-based classification.
+/// - May produce false positives/negatives for ambiguous text.
+fn infer_level(line: &str, is_stderr: bool) -> LogLevel {
+    if is_stderr {
+        return LogLevel::ERROR;
+    }
+
+    let l = line.to_lowercase();
+
+    if l.contains("error") {
+        LogLevel::ERROR
+    } else if l.contains("warn") {
+        LogLevel::WARN
+    } else if l.contains("debug") {
+        LogLevel::DEBUG
+    } else {
+        LogLevel::INFO
     }
 }
 
@@ -438,26 +569,32 @@ fn read_msg<R: Read>(stream: &mut R) -> WireMessage {
     serde_json::from_slice(&data).expect("Failed to deserialize message")
 }
 
-/*
- * Formats and prints terminal logs with color-coded levels.
- *
- * PURPOSE:
- * Provides consistent CLI logging with timestamp, level tag, component, and message.
- *
- * PARAMETERS:
- * - level: Log severity ("INFO", "SUCCESS", "ERROR", etc.)
- * - component: Source module or system component name
- * - message: Log content to display
- *
- * BEHAVIOR:
- * - Prepends HH:MM:SS timestamp
- * - Applies color-coded label based on level
- * - Formats output for readable terminal diagnostics
- *
- * NOTES:
- * - Uses ANSI styling for terminal readability
- * - Intended for CLI/debug output only
- */
+/// Formats and prints terminal logs with color-coded levels.
+///
+/// Workflow:
+/// 1. Generate current timestamp (HH:MM:SS).
+/// 2. Map log level to corresponding ANSI color/style.
+/// 3. Format and print structured log line.
+///
+/// Arguments:
+/// - `level`: Log severity ("INFO", "SUCCESS", "ERROR", etc.).
+/// - `component`: Source module or system component name.
+/// - `message`: Log content to display.
+///
+/// Returns:
+/// - None.
+///
+/// Behavior:
+/// - Prepends timestamp to each log entry.
+/// - Applies color-coded labels based on level.
+/// - Produces consistent, human-readable terminal output.
+///
+/// Panics:
+/// - None.
+///
+/// Notes:
+/// - Uses ANSI escape codes for styling.
+/// - Intended for CLI/debug output only.
 fn term_log(level: &str, component: &str, message: &str) {
     let time = Local::now().format("%H:%M:%S").to_string();
     let prefix = match level {

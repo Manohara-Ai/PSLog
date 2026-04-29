@@ -7,6 +7,7 @@
  *
  * DATA STRUCTURES:
  * - Message: wire protocol for Pub/Sub/Log communication
+ * - LogEntry: structured log payload (timestamp, level, message)
  * - ConnMeta: tracks connection role (pub/sub), topic, persistence flag
  * - TopicState: holds subscribers and optional ring buffer of logs
  *
@@ -26,9 +27,9 @@
  *      - Close → cleanup connection
  *
  * NOTES:
- * - In-memory only (no persistence)
+ * - In-memory only (no persistence beyond optional per-topic buffer)
  * - Fanout is push-based over TCP
- * - Buffer acts as ring (fixed size)
+ * - Buffer acts as a fixed-size ring (FIFO eviction)
  */
 
 package main
@@ -47,11 +48,17 @@ import (
 const socketPath = "/tmp/pslog.sock"
 const maxBufferSize = 1000
 
+type LogEntry struct {
+    TS      uint64 `json:"ts"`
+    Level   string `json:"level"`
+    Message string `json:"message"`
+}
+
 type Message struct {
 	Type string `json:"type"`
 
 	Topic   string `json:"topic,omitempty"`
-	Log     string `json:"log,omitempty"`
+	Log     *LogEntry `json:"log,omitempty"`
 	Persist bool   `json:"persist,omitempty"`
 	Port    uint16 `json:"port,omitempty"`
 	IP      string `json:"ip,omitempty"`
@@ -59,13 +66,13 @@ type Message struct {
 
 type ConnMeta struct {
 	Role    string
-	Topic   string
+	Topic   string	
 	Persist bool
 }
 
 type TopicState struct {
 	Subscribers []net.Conn
-	Buffer      []string
+	Buffer      []*LogEntry
 }
 
 var (
@@ -182,7 +189,7 @@ func handleMessage(conn net.Conn, msg Message) {
 			topics[msg.Topic] = t
 		}
 		t.Subscribers = append(t.Subscribers, tcpConn)
-		buffer := append([]string{}, t.Buffer...)
+		buffer := append([]*LogEntry{}, t.Buffer...)
 		mu.Unlock()
 
 		for _, log := range buffer {
@@ -272,29 +279,29 @@ func extractIP(addr string) string {
 
 // sendLog
 // Purpose:
-//     Sends a log message to a subscriber connection.
+//     Sends a log message to a subscriber over a connection.
 // Workflow:
-//     Wraps log into Message and forwards via sendResponse.
+//     Wraps the log entry into a Message and forwards it via sendResponse.
 // Arguments:
-//     conn -> subscriber connection
-//     topic -> topic name
-//     log   -> log payload
+//     conn  -> active subscriber connection
+//     topic -> topic associated with the log
+//     log   -> pointer to log payload
 // Returns:
-//     error if write fails
+//     error if the write to the connection fails
 // Behavior:
-//     Fire-and-forget style fanout wrapper
+//     Fire-and-forget fanout helper (no retries or acknowledgements)
 // Failure Modes:
-//     - broken pipe
-//     - closed connection
+//     - broken pipe (remote side closed)
+//     - write on closed or invalid connection
 // Notes:
-//     Used only inside broker fanout loop
-func sendLog(conn net.Conn, topic, log string) error {
-	resp := Message{
-		Type:  "Log",
-		Topic: topic,
-		Log:   log,
-	}
-	return sendResponse(conn, resp)
+//     Used only within the broker fanout loop
+func sendLog(conn net.Conn, topic string, log *LogEntry) error {
+    resp := Message{
+        Type:  "Log",
+        Topic: topic,
+        Log:   log,
+    }
+    return sendResponse(conn, resp)
 }
 
 // sendResponse
