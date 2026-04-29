@@ -172,10 +172,17 @@ fn main() {
 
         Commands::Scan => {
             let mut stream = ensure_server();
-            send_msg(&mut stream, &WireMessage::Scan);
+            send_msg(&mut stream, &WireMessage::Scan { topics: None });
 
-            loop {
-                println!("{:?}", read_msg(&mut stream));
+            let msg = read_msg(&mut stream);
+
+            match msg {
+                WireMessage::Scan { topics: Some(t) } => {
+                    for topic in t {
+                        println!("{}", topic);
+                    }
+                }
+                _ => print!(""),
             }
         }
     }

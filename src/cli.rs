@@ -150,7 +150,9 @@ pub enum WireMessage {
         log: LogEntry,
     },
 
-    Scan,
+    Scan {
+        topics: Option<Vec<String>>,
+    },
 
     Ping,
 

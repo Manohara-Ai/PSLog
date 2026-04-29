@@ -73,6 +73,7 @@ type ConnMeta struct {
 type TopicState struct {
 	Subscribers []net.Conn
 	Buffer      []*LogEntry
+	Publisher 	net.Conn
 }
 
 var (
@@ -157,15 +158,28 @@ func handleMessage(conn net.Conn, msg Message) {
 
 	case "Pub":
 		mu.Lock()
+
+		t, ok := topics[msg.Topic]
+		if !ok {
+			t = &TopicState{}
+			topics[msg.Topic] = t
+		}
+
 		connState[conn] = ConnMeta{
 			Role:    "pub",
 			Topic:   msg.Topic,
 			Persist: msg.Persist,
 		}
-		if _, ok := topics[msg.Topic]; !ok {
-			topics[msg.Topic] = &TopicState{}
+
+		if t.Publisher != nil {
+			mu.Unlock()
+			brokerErr("PUB_REJECT", fmt.Errorf("publisher already exists for topic"))
+			return
 		}
+
+		t.Publisher = conn
 		mu.Unlock()
+
 		brokerInfo("PUBLISH", msg.Topic)
 
 	case "Sub":
@@ -197,6 +211,23 @@ func handleMessage(conn net.Conn, msg Message) {
 		}
 
 		brokerInfo("SUBSCRIBE", fmt.Sprintf("%s -> %s", msg.Topic, target))
+
+	case "Scan":
+		mu.Lock()
+		var active []string
+
+		for topic, t := range topics {
+			if t.Publisher != nil {
+				active = append(active, topic)
+			}
+		}
+
+		mu.Unlock()
+
+		sendResponse(conn, map[string]interface{}{
+			"type":   "Scan",
+			"topics": active,
+		})
 
 	case "Log":
 		mu.Lock()
@@ -254,6 +285,14 @@ func handleMessage(conn net.Conn, msg Message) {
 func cleanupConnection(conn net.Conn) {
 	mu.Lock()
 	defer mu.Unlock()
+	meta, ok := connState[conn]
+	if ok && meta.Role == "pub" {
+		if t := topics[meta.Topic]; t != nil {
+			if t.Publisher == conn {
+				t.Publisher = nil
+			}
+		}
+	}
 	delete(connState, conn)
 }
 
