@@ -1,81 +1,57 @@
-# ==========================================
-# C++ / CMake Rules
-# ==========================================
-# Compiled object files & libraries
-*.o
-*.obj
-*.a
-*.lib
-*.so
-*.dylib
-*.dll
+# Top-Level Binaries & Runtime Sockets
+/bin/
+*.sock
+nohup.out
 
-# Compiled CLI Executables
-cli/pslog
-cli/pslog.exe
-build/
-bin/
-
-# CMake output directories
+# C++ / CMake Build Artifacts
+cli/build/
+cli/bin/
+cli/out/
 CMakeCache.txt
 CMakeFiles/
-cmake-build-*/
-Makefile
 cmake_install.cmake
+Makefile
 
-# ==========================================
-# Go Rules
-# ==========================================
-# Binaries
-broker/go_broker
-broker/go_broker.exe
+# Go Build Artifacts
 *.exe
-*.exe~
+*.exe?
+*.dll
+*.so
+*.dylib
 *.test
 *.out
 
-# Go dependencies / builds
-/vendor/
-/bin/
-/dist/
-
-# ==========================================
-# Java / Spring Boot Rules
-# ==========================================
-# Maven
+# Java / Spring Boot Build Artifacts
 control-plane/target/
+control-plane/.mvn/timing/
 *.class
 *.jar
 *.war
-*.ear
+HELP.md
 
-# Gradle (if you switch to Gradle later)
-control-plane/build/
-.gradle/
-gradle-app.setting
+# Build System Wrappers
+.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
 
-# ==========================================
-# IDE & System Garbage
-# ==========================================
-# JetBrains (CLion, GoLand, IntelliJ)
+# IDEs & Editor Files
+.vscode/
 .idea/
 *.iws
 *.iml
 *.ipr
-
-# VS Code
-.vscode/
-!.vscode/settings.json
-!.vscode/tasks.json
-
-# OS Specific
-.DS_Store
-.DS_Store?
-ehthumbs.db
-Thumbs.db
-
-# Logs & Temp files
-*.log
-*.tmp
+.apt_generated
+.classpath
+.factorypath
+.project
+.settings
+.springBeans
+.sts4-cache
+/nbproject/private/
+/nbbuild/
+/dist/
+/nbdist/
+/.nb-gradle/
 *.swp
-nohup.out
+*.swo
+.DS_Store

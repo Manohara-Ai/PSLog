@@ -1,0 +1,15 @@
+${AnsiColor.BRIGHT_GREEN}
+██████╗ ███████╗██╗      ██████╗  ██████╗ 
+██╔══██╗██╔════╝██║     ██╔═══██╗██╔════╝ 
+██████╔╝███████╗██║     ██║   ██║██║  ███╗
+██╔═══╝ ╚════██║██║     ██║   ██║██║   ██║
+██║     ███████║███████╗╚██████╔╝╚██████╔╝
+╚═╝     ╚══════╝╚══════╝ ╚═════╝  ╚═════╝ 
+${AnsiColor.DEFAULT}
+====================================================================
+  Distributed Telemetry & Logging Engine — Spring Control Plane
+====================================================================
+${AnsiColor.BRIGHT_BLUE}Spring Boot Version : ${AnsiColor.DEFAULT}${spring-boot.version}
+${AnsiColor.BRIGHT_BLUE}Java Version        : ${AnsiColor.DEFAULT}${java.version}
+${AnsiColor.BRIGHT_BLUE}Application Name    : ${AnsiColor.DEFAULT}${spring.application.name}
+====================================================================
