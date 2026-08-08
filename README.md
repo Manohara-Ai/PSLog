@@ -1,127 +1,179 @@
-<p align="middle">
-  <img src="resources/logo.png" alt="PSLog" width="240" style="vertical-align: middle; margin-right: 12px;">
-  <span style="font-size: 22px; font-weight: 600;"></span><br>
-  <span style="font-size: 14px;">
-    A lightweight rust based service for streaming logs.
-  </span><br>
-  <img src="https://img.shields.io/badge/license-MIT-green">
-  <img src="https://img.shields.io/badge/language-rust-orange">
-  <img src="https://img.shields.io/badge/backend-go-blue">
+<p align="center">
+  <img src="resources/logo.png" alt="PSLog Logo" width="220">
+  <br>
+  <b>High-Performance Distributed Telemetry & Real-Time Log Streaming</b>
+  <br><br>
+  <img src="https://img.shields.io/badge/license-MIT-green.svg">
+  <img src="https://img.shields.io/badge/CLI-C%2B%2B20-blue.svg">
+  <img src="https://img.shields.io/badge/Broker-Go-00ADD8.svg">
+  <img src="https://img.shields.io/badge/Control_Plane-Spring_Boot-6DB33F.svg">
 </p>
-
----
-# PSLog
-
-A lightweight Rust-based service for streaming logs across processes via GO broker in real time.
 
 ---
 
 ## Overview
 
-PSLog splits the work between two specialized components:
+**PSLog** is a lightweight, hybrid distributed log streaming system designed for low-latency log transport and process telemetry. It splits responsibilities across three decoupled layers:
 
-Control Plane (Unix Sockets): The CLI communicates with the Broker over /tmp/pslog.sock for high-speed, low-latency registration and log ingestion.
-
-Data Plane (TCP): The Broker pushes logs to subscribers over TCP, enabling remote monitoring across the network.
-
-<pre>
-
-[ Process ]
-    |
-    | (stdout)
-    v
-[ Rust CLI (Publisher) ]
-    |
-    | (Unix Domain Socket)
-    v
-[ Go Broker ]
-    |-------------------|
-    |                   |
-    v                   v
-[ Subscriber A ]   [ Subscriber B ]
-</pre>
-
+1. **C++ CLI Engine (`pslog`):** Ingests process stdout/stderr using framed JSON over IPC, and renders incoming log streams directly from UDP sockets.
+2. **Go Networking Broker (`broker`):** An in-memory routing hub that accepts publisher streams via Unix domain sockets and fans them out to active subscribers over UDP datagrams.
+3. **Spring Boot Control Plane (`control-plane`):** A REST management server managing global broker registration, subscriber handshake routing, and active topic discovery.
 
 ---
 
-## Installation
+## Architecture
 
-1. Prerequisites: Ensure you have the Rust toolchain and Go installed.
+```text
+                                 +-----------------------+
+                                 |  Spring Control Plane |
+                                 |   (:8080 HTTP REST)   |
+                                 +-----------+-----------+
+                                             |
+            1. POST /subscribe               | 2. POST /api/v1/broker/register
+            (?topic=X&port=54321)            |    (?topic=X&ip=127.0.0.1&port=54321)
+                                             v
++-------------------+   4. Direct UDP Stream +-------------------+
+|  C++ CLI          |<-------------------|    Go Broker      |
+|  (pslog sub/pub)  |   (Zero-overhead   |   (:60759 / UDP)  |
++---------+---------+    log fanout)     +---------+---------+
+          |                                        ^
+          | 3. Framed JSON Logs                    |
+          +----------------------------------------+
+            (via Unix Socket: /tmp/pslog.sock)
+```
 
-2. Build & Install
-    ```
-    git clone https://github.com/Manohara-Ai/PSLog
-    cd pslog
-    ```
+### Component Breakdown
 
-3. Build the Rust CLI
-    ```
-    cargo build --release
-    ```
+- **Unix Domain Socket (`/tmp/pslog.sock`):** Used for publisher-to-broker IPC with a 4-byte big-endian framing protocol to prevent log tearing.
 
-4. Build the Go Broker
-    ```
-    go build -o pslog_server server.go
-    ```
+- **UDP Data Plane:** Low-latency broadcast engine. Subscribers receive log lines directly from the broker via UDP datagrams.
+
+- **HTTP Control Plane:** Spring Boot provides central routing metadata. If the broker is offline when a publisher starts, the C++ CLI automatically spawns the Go broker in the background.
 
 ---
+
+## Prerequisites
+
+Ensure your build environment has the following installed:
+
+- **C++ Compiler:** GCC or Clang (C++17 or higher) & CMake `3.20+`
+- **Go:** `1.20+`
+- **Java:** JDK 17, 21, or 25
+- **Build Tools:** `make`, `curl`
+
+---
+
+## Building & Configuration
+
+### Interactive Build Script
+
+PSLog includes an interactive build script that compiles all three components and writes your system configuration (`~/.pslog.conf`):
+
+```bash
+git clone https://github.com/Manohara-Ai/PSLog.git
+cd PSLog
+chmod +x build.sh
+./build.sh
+```
+
+During setup, press **[ENTER]** to accept default settings or enter custom values:
+
+- **Control Plane Address:** `127.0.0.1:8080`
+- **Unix Socket Path:** `/tmp/pslog.sock`
+- **Broker Management Port:** `60759`
+
+### Adding to PATH (Optional)
+
+Add the compiled binary directory to your active shell session:
+
+```bash
+export PATH="$(pwd)/bin:$PATH"
+```
 
 ## Usage
 
-PSLog provides three operational modes: publish logs from processes, subscribe to live streams, and inspect active topics.
+### 1. Launch Control Plane
 
-### General Help
+Start the Spring Boot Control Plane on `:8080`:
 
-```
-pslog --help
-```
-
-### Publish Logs
-
-Run a process and stream its stdout logs to a topic:
-
-```
-pslog pub --exec <EXECUTABLE> [ARGS...] --topic <TOPIC> --persist
+```bash
+cd control-plane
+./mvnw spring-boot:run
 ```
 
-Options:
-- --topic     Target topic name (optional)
-- --port      Broker port (default: 60759)
-- --qos       Quality of Service: high | auto | poor
-- --auth      Authentication token (optional)
-- --persist   Store logs in broker buffer
-- --exec      Executable to run (required)
-- ARGS...     Arguments passed to the executable
+### 2. Publish Logs (`pslog pub`)
 
-Example:
-```
-pslog pub --exec python3 -- script.py --persist
+Run any executable command and stream its stdout/stderr to a topic stream. If the Go broker daemon isn't running, `pslog` auto-spawns it.
+
+```bash
+pslog pub <topic> "<command> [args...]"
 ```
 
-### Subscribe to Logs
+*Example:*
 
-Listen to a live log stream from a topic:
-
-```
-pslog sub --topic <TOPIC>
+```bash
+pslog pub auth-service "ping -c 10 8.8.8.8"
 ```
 
-Options:
-- --topic     Topic to subscribe to (required)
-- --port      Subscriber port (default: 60759)
-- --fos       Mode: sync | auto
-- --format    Output format: text | json | pretty
-- --ip        Override subscriber IP (optional)
+### 3. Subscribe to Logs (`pslog sub`)
 
-Example:
-```
-pslog sub --topic script.py
+Open another terminal tab and listen to live log datagrams for a given topic:
+
+```bash
+pslog sub <topic>
 ```
 
-### Scan Topics
+*Example:*
 
-List all active topics:
-
+```bash
+pslog sub auth-service
 ```
+
+### 4. Scan Active Topics (`pslog scan`)
+
+Query the Spring Control Plane to list all active streaming channels:
+
+```bash
 pslog scan
 ```
+
+*Example Output:*
+
+```text
+Active PSLog Topics:
+  • auth-service
+  • payment-gateway
+```
+
+## Configuration (`.pslog.conf`)
+
+The system reads settings from `~/.pslog.conf` (or `./pslog.conf` as a fallback):
+
+```ini
+# PSLog System Configuration
+CONTROL_PLANE_ADDR=127.0.0.1:8080
+BROKER_ADDR=/tmp/pslog.sock
+BROKER_MGMT_PORT=60759
+```
+
+## Repository Structure
+
+```text
+PSLog/
+├── bin/                 # Compiled binaries (pslog, broker)
+├── broker/              # Go networking engine (Unix socket & UDP fanout)
+│   ├── go.mod
+│   └── main.go
+├── cli/                 # C++ CLI source engine
+│   ├── CMakeLists.txt
+│   └── src/             # main.cpp, protocol.hpp, pub/sub handlers
+├── control-plane/       # Spring Boot HTTP REST management server
+│   ├── pom.xml
+│   └── src/
+├── build.sh             # Interactive master build & configuration script
+└── README.md
+```
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
